@@ -1,0 +1,1582 @@
+---
+title: "Covid-19 data - VisDS21"
+author: "Jonas Kernebeck, Cem Kozcuer, Felix Lehner"
+date: "07/16/2021"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(fig.width=7, fig.height=6, fig.align = "center") 
+```
+
+\newpage
+
+```{r imported libraries}
+require('tidyverse')
+library(lubridate)
+library(tidyr)
+library(gridExtra)
+require('maps')
+library(maps)
+library(car)
+library(ggplot2)
+library(fitdistrplus)
+library(patchwork)
+library(gridExtra)
+library("factoextra")
+```
+
+```{r constants}
+# some code here
+```
+
+
+```{r}
+# load data from CSV
+covid.data = as_tibble(read.csv(file='owid-covid-data.csv'))
+```
+<br><br>
+
+# 1 Introduction
+
+In our project we used the [*COVID-19 dataset* maintained by *our world in data*.(link)](https://github.com/owid/covid-19-data/blob/master/public/data/README.md)
+
+The data is mostly feed by sources from the John Hopkins University and the European Centre for Disease Prevention and Control. But also from other sources.
+
+It is updated daily and contained roughly 100,000 samples the last time we tapped it (2021-07-11). It contains data about roughly 190 countries for everyday with 60 attributes. The attributes span different topics like data about locations, cases, deaths, tests, vaccination, hospitals, demography, medical aspects, development and economy.
+
+In our approach we start in 2. with on overview about the different continents in regards to cases, development and health specific indicators.
+In the following in 3. we look closer to the EU and especially compare countries with high GDPs with low GDPs for covid-19-cases and deaths figures.
+In 4. analyse the distributions of the total cases and total deaths.
+With 5. we look at how much of the variance in the data can be explained by attributes differentiated by continents.
+And lastly, 6. we inspect the data set for missing entries compared on continents but also with a closer look onto Africa and Europe.
+
+# 1.1 Covid cases and HDI by countries
+
+```{r, fig.width=10, fig.height=9}
+world_data = as_tibble(map_data('world'))
+
+grouped_data = covid.data %>%
+  replace_na(list(total_tests=0, total_vaccinations=0, human_development_index=0)) %>%
+  # filter(str_detect(date, '2021-01|2021-02|2021-03|2021-04|2021-05|2021-06|2021-07')) %>% 
+  # filter(continent == "Europe") %>% 
+  group_by(location) %>%
+  summarise(cases = max(total_cases), vacs = max(total_vaccinations), hdi=max(human_development_index)) %>%
+  filter(location %in% c('World', 'Asia', 'North America') == F) %>%
+  mutate(location = replace(location, location=='United States', 'USA')) %>% 
+  mutate(location = replace(location, location=='Congo', 'Democratic Republic of the Congo')) %>% 
+  replace_na(list(cases=0, vacs=0, hdi=0)) %>%
+  arrange(desc(cases))
+
+grouped_with_lats = inner_join(grouped_data, world_data, by=c("location" = "region"))
+
+plain <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.title = element_blank(),
+  panel.background = element_rect(fill = "white"),
+  plot.title = element_text(hjust = 0.5)
+)
+
+plot_map_cases = ggplot(data=grouped_with_lats, aes(x=long, y=lat, group=group)) + 
+  coord_fixed(1.3) + 
+  geom_polygon(aes(fill = cases)) +
+  scale_fill_distiller(palette = "RdGy", direction = -1) +
+  ggtitle('Amount of covid cases by country') + 
+  plain
+
+plot_map_hdi = ggplot(data=grouped_with_lats, aes(x=long, y=lat, group=group)) + 
+  coord_fixed(1.3) + 
+  geom_polygon(aes(fill = hdi)) +
+  scale_fill_distiller(palette = "RdGy", direction = -1) +
+  ggtitle('Human Development Index by country') + 
+  plain
+
+grid.arrange(plot_map_cases, plot_map_hdi, ncol=1, nrow =2)
+
+
+```
+
+The two world maps give an overview of the amount of covid cases and the HDI by country. In absolute values, the United States and India have the most covid cases.
+The United States also have the highest HDI beside some countries in central / northern Europe and Australia. This shows, that the dimensions of the Covid-19 spread is not only dependent from the development of a country, but also from other important factors. Therefore, we want to focus on the differences and commons of some development and health indicators between continents. After that, a country-specific comparision will be made.
+\newpage
+
+
+# 2 What are differences / commonalitites between continents?
+
+For the continent-specific comparison of different development and health indicators, we look at boxplots and kernel density estimations for different variables. All of these variables are time-independent and are the values for the year 2020 of the countries respectively. The different boxplots display the ranges for the different continents. 
+
+
+## 2.1 Comparison of development indicators of selected continents
+
+For the development indicators, we look at the median age, the life expectancy and the already considered human development index.
+<br>
+<br>
+```{r, fig.width=10, fig.height=9}
+
+colors_continent = c(Europe = "#5AC868", Asia = "#B9A213", Africa ="#F8756D", NorthA = "#04BEC4", SouthA="#629DFF")
+
+continent_location_grouped = covid.data %>%
+  filter(location %in% c('Europe', 'European Union', 'Asia', 'Africa', 'America') == F) %>% 
+  replace_na(
+    list(
+      total_cases=0,
+      total_cases_per_million=0,
+      total_deaths=0,
+      total_deaths_per_million=0,
+      population=0,
+      median_age=0,
+      handwashing_facilities=0,
+      life_expectancy=0,
+      hospital_beds_per_thousand=0,
+      extreme_poverty = 0,
+      human_development_index=0)) %>% 
+  group_by(location, continent) %>% 
+  summarise(
+    total_cases=max(total_cases),
+    total_cases_per_million=max(total_cases_per_million),
+    total_deaths=max(total_deaths),
+    total_deaths_per_million = max(total_deaths_per_million), 
+    population=max(population),
+    median_age=max(median_age),
+    handwashing_facilities=max(handwashing_facilities),
+    life_expectancy=max(life_expectancy),
+    hospital_beds_per_thousand=max(hospital_beds_per_thousand),
+    extreme_poverty=max(extreme_poverty),
+    human_development_index=max(human_development_index)
+    ) %>% 
+  filter((continent == "") == F) %>% 
+  filter((continent == 'Oceania') == F) %>% 
+  mutate(continent = replace(continent, continent=='North America', 'NorthA')) %>%
+  mutate(continent = replace(continent, continent=='South America', 'SouthA'))
+
+bp1= continent_location_grouped %>% 
+  filter((median_age==0)==F) %>% 
+  ggplot(aes(x=continent, y=median_age, color=continent)) +
+  ggtitle('Median Age by continent') + 
+  ylab('Median Age') +  
+  geom_boxplot() + 
+  scale_fill_manual(values=colors_continent) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde1 = continent_location_grouped %>% 
+  filter((median_age==0)==F) %>% 
+  ggplot(aes(median_age, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('Median Age') + 
+  ylab('Density') + 
+  ggtitle('KDE for median age') + 
+  theme(plot.title = element_text(hjust=0.5))
+
+
+bp2 = continent_location_grouped %>% 
+  filter((life_expectancy==0)==F) %>% 
+  ggplot(aes(x=continent, y=life_expectancy, color=continent)) +
+  ggtitle('Life Expectancy by continent') + 
+  ylab('Life Expectancy') +  
+  geom_boxplot() + 
+  scale_fill_manual(values=colors_continent) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde2 = continent_location_grouped %>% 
+  filter((life_expectancy==0)==F) %>% 
+  ggplot(aes(life_expectancy, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('life expectancy') + 
+  ylab('density') + 
+  ggtitle('KDE for life expectancy') + 
+  theme(plot.title = element_text(hjust=0.5))
+
+bp3 = continent_location_grouped %>% 
+  filter((human_development_index==0)==F) %>% 
+  ggplot(aes(x=continent, y=human_development_index, color=continent)) +
+  ggtitle('Human Development Index by continent') + 
+  ylab('Human Development Index') +  
+  geom_boxplot() + 
+  scale_fill_manual(values=colors_continent) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde3 = continent_location_grouped %>% 
+  filter((human_development_index==0)==F) %>% 
+  ggplot(aes(human_development_index, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('Human Development Index') + 
+  ylab('density') + 
+  ggtitle('KDE for HDI') + 
+  theme(plot.title = element_text(hjust=0.5))
+
+grid.arrange(bp1, kde1, bp2, kde2,  bp3, kde3, ncol=2, nrow =3)
+```
+<br>
+<br>
+Conclusion: For all of the three indicators, Europe has always the highest level. The average and the third quantile is higher than all of the other countries. It is also noticeable that the range between the countries in Europe is always small compared to continents like Africa and Asia. Africa has the lowest niveau of all three development indicators. It also has some outliers in the median age and the life expectancy.
+
+
+
+<br><br><br><br>
+
+## 2.2 Comparison of health specific indicators of selected continents
+For the health-specific indicators, we look at the amount of handwashing facilities, amount of hospital beds per thousand and the extreme poverty.
+<br>
+<br>
+```{r, fig.width=10, fig.height=9}
+bp1= continent_location_grouped %>% 
+  filter((handwashing_facilities==0)==F) %>% 
+  ggplot(aes(x=continent, y=handwashing_facilities, color=continent)) +
+  ggtitle('Amount handwashing facilities by continent') + 
+  ylab('amount handwashing facilities') +  
+  geom_boxplot() + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde1 = continent_location_grouped %>% 
+  filter((handwashing_facilities==0)==F) %>% 
+  ggplot(aes(handwashing_facilities, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('amount handwashing facilities') + 
+  ylab('density') + 
+  ggtitle('KDE for amount handwashing facilities') + 
+  theme(plot.title = element_text(hjust=0.5)) 
+
+
+bp2 = continent_location_grouped %>% 
+  filter((hospital_beds_per_thousand==0)==F) %>% 
+  ggplot(aes(x=continent, y=hospital_beds_per_thousand, color=continent)) +
+  ggtitle('Hospital beds per thousand by continent') + 
+  ylab('hospital beds per thousand') +  
+  geom_boxplot() + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde2 = continent_location_grouped %>% 
+  filter((hospital_beds_per_thousand==0)==F) %>% 
+  ggplot(aes(hospital_beds_per_thousand, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('Hospital beds per thousand') + 
+  ylab('density') + 
+  ggtitle('KDE for hospital beds per thousand by continent') + 
+  theme(plot.title = element_text(hjust=0.5))
+
+bp3 = continent_location_grouped %>% 
+  filter((extreme_poverty==0)==F) %>% 
+  ggplot(aes(x=continent, y=extreme_poverty, color=continent)) +
+  ggtitle('Extreme Poverty by continent') + 
+  ylab('Extreme Poverty') +  
+  geom_boxplot() + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+kde3 = continent_location_grouped %>% 
+  filter((extreme_poverty==0)==F) %>% 
+  ggplot(aes(extreme_poverty, fill=continent, colour=continent)) + 
+  geom_density(alpha=0.1) + 
+  xlab('extreme poverty') + 
+  ylab('density') + 
+  ggtitle('KDE for extreme poverty by continent') + 
+  theme(plot.title = element_text(hjust=0.5)) + 
+  xlim(0,29) + 
+  ylim(0,0.3)
+
+grid.arrange(bp1, kde1, bp2, kde2,  bp3, kde3, ncol=2, nrow =3)
+
+```
+Conclusion: For the health-specific indicators, we can detect a similar tendency as in the development sector. Europe has similar good results in the health sector with the lowest amount of countries with extreme poverty and the highest amount of handwashing facilities and hospital beds per thousand. Also the range within the continent of Europe is the lowest for the handwashing facilities and the extreme poverty. The continent Africa has the highest range in handwashing facilities and extreme poverty and also the weakest level of all continents.
+
+
+
+\newpage
+# 3 How do covid-19-cases and deaths differ in the countries of the EU?
+
+In order to get an overview over the covid-19-cases and covid-death figures in the EU we first listed all countries in heatmaps regarding *total deaths*, *total cases*, *total deaths per million* and *total cases per million* figures. Both absolute and relative figures are shown over the time of the pandemic and sorted by the maximum of the attributes.
+
+The heatmap can show nicely how the total figures for each country develop over time for each country. Without any overlappings the countries are easily to compare with each other. The color coding which shows the accumulation of the numbers indicate how high the numbers of each country are and how fast they raised.
+
+<br>
+<br>
+
+```{r research question 2 prerequisites}
+
+# convert date column to date object in order to properly work with ggplot
+covid.data$date <- as_date(covid.data$date)
+
+all.eu.countries <- c(
+    'Austria',
+    'Belgium',
+    'Bulgaria',
+    'Czechia',
+    'Croatia',
+    'Cyprus',
+    'Denmark',
+    'Estonia',
+    'Finland',
+    'France',
+    'Germany',
+    'Greece',
+    'Hungary',
+    'Ireland',
+    'Italy',
+    'Latvia',
+    'Lithuania',
+    'Luxembourg',
+    'Malta',
+    'Netherlands',
+    'Poland',
+    'Portugal',
+    'Romania',
+    'Slovakia',
+    'Slovenia',
+    'Spain',
+    'Sweden',
+    'United Kingdom'
+)
+
+covid.time.limits <- c(
+    ymd("2020-02-01"),
+    ymd("2021-07-01")
+)
+
+covid.time.breaks <- c(
+    ymd("2020-02-01"),
+    ymd("2020-05-01"),
+    ymd("2020-08-01"),
+    ymd("2020-11-01"),
+    ymd("2021-02-01"),
+    ymd("2021-05-01"),
+    ymd("2021-07-01")
+)
+
+covid.time.breaks.labels <- c(
+    "Feb 2020",
+    "May 2020",
+    "Aug 2020",
+    "Nov 2020",
+    "Feb 2021",
+    "May 2021",
+    "Jul 2021"
+)
+```
+
+```{r research question 2 total death heatmaps}
+
+
+ ## HEATMAPS OF DEATHS AND CASES OF EU
+
+deaths.and.cases.eu <- covid.data %>%
+   filter(location %in% all.eu.countries == TRUE) %>%
+   dplyr::select(
+       date,
+       location,
+       total_deaths,
+       total_deaths_per_million,
+       total_cases,
+       total_cases_per_million,
+   )
+
+ # group date into month
+total.deaths.and.cases.eu.in.months <- deaths.and.cases.eu %>%
+   group_by(month = floor_date(date, "month"), location) %>%
+   summarize(
+       total_deaths=max(total_deaths),
+       total_deaths_per_million=max(total_deaths_per_million),
+       total_cases=max(total_cases),
+       total_cases_per_million=max(total_cases_per_million),
+   )
+
+
+ # create order for heatmap by total deaths
+total.deaths.summary <- total.deaths.and.cases.eu.in.months %>%
+     group_by(location) %>%
+     summarize(month1 = "2020-03-01",
+               last = total_deaths[n()]) %>%
+      arrange(desc(month1), last)
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.death <- total.deaths.and.cases.eu.in.months %>%
+    mutate(location = factor(location, levels = total.deaths.summary$location))
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.death$month <- factor(total.deaths.and.cases.eu.in.months.ordered.by.total.death$month)
+
+
+# heatmap total death
+total.deaths.heatmap <- total.deaths.and.cases.eu.in.months.ordered.by.total.death %>%
+    ggplot(
+        aes(x=month, y=location, fill = total_deaths)
+    ) +
+    geom_tile(color = "white", size = 0.03) +
+    scale_fill_viridis_c(
+        option = "B", begin = 0.2, end = 0.8,
+        name = "total deaths",
+        guide = guide_colorbar(
+            barwidth = grid::unit(3.5, "in"),
+            barheight = grid::unit(0.2, "in")
+        )
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.y = element_blank()
+    ) +
+    theme(legend.position="bottom", legend.direction="horizontal")
+
+
+  # create order for heatmap by total deaths per million
+total.deaths.per.million.summary <- total.deaths.and.cases.eu.in.months %>%
+    group_by(location) %>%
+    summarize(month1 = "2020-03-01",
+              last = total_deaths_per_million[n()]) %>%
+    arrange(desc(month1), last)
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.deaths.per.million <- total.deaths.and.cases.eu.in.months %>%
+    mutate(location = factor(location, levels = total.deaths.per.million.summary$location))
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.deaths.per.million$month <- factor(total.deaths.and.cases.eu.in.months.ordered.by.total.deaths.per.million$month)
+
+
+# heatmap total death per million
+total.deaths.per.million.heatmap <- total.deaths.and.cases.eu.in.months.ordered.by.total.deaths.per.million %>%
+        ggplot(
+        aes(x=month, y=location, fill = total_deaths_per_million)
+    ) +
+    geom_tile(color = "white", size = 0.03) +
+    scale_fill_viridis_c(
+        option = "B", begin = 0.2, end = 0.8,
+        name = "total deaths per million",
+        guide = guide_colorbar(
+            barwidth = grid::unit(3.0, "in"),
+            barheight = grid::unit(0.2, "in")
+        )
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.y = element_blank()
+    ) +
+    theme(legend.position="bottom", legend.direction="horizontal")
+
+
+# create order for heatmap by total cases
+total.cases.summary <- total.deaths.and.cases.eu.in.months %>%
+    group_by(location) %>%
+    summarize(month1 = "2020-03-01",
+              last = total_cases[n()]) %>%
+    arrange(desc(month1), last)
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.cases <- total.deaths.and.cases.eu.in.months %>%
+    mutate(location = factor(location, levels = total.cases.summary$location))
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.cases$month <- factor(total.deaths.and.cases.eu.in.months.ordered.by.total.cases$month)
+
+
+# heatmap total cases
+total.cases.heatmap <- total.deaths.and.cases.eu.in.months.ordered.by.total.cases %>%
+    ggplot(
+        aes(x=month, y=location, fill = total_cases)
+    ) +
+    geom_tile(color = "white", size = 0.03) +
+    scale_fill_viridis_c(
+        option = "B", begin = 0.2, end = 0.8,
+        name = "total cases",
+        guide = guide_colorbar(
+            barwidth = grid::unit(3.5, "in"),
+            barheight = grid::unit(0.2, "in")
+        )
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.y = element_blank()
+    ) +
+    theme(legend.position="bottom", legend.direction="horizontal")
+
+
+# create order for heatmap by total cases per million
+total.cases.per.million.summary <- total.deaths.and.cases.eu.in.months %>%
+     group_by(location) %>%
+      summarize(month1 = "2020-03-01",
+                last = total_cases_per_million[n()]) %>%
+      arrange(desc(month1), last)
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.cases.per.million <- total.deaths.and.cases.eu.in.months %>%
+      mutate(location = factor(location, levels = total.cases.per.million.summary$location))
+
+total.deaths.and.cases.eu.in.months.ordered.by.total.cases.per.million$month <- factor(total.deaths.and.cases.eu.in.months.ordered.by.total.cases.per.million$month)
+
+
+  # heatmap total cases per million
+total.cases.per.million.heatmap <- total.deaths.and.cases.eu.in.months.ordered.by.total.cases.per.million %>%
+      ggplot(
+          aes(x=month, y=location, fill = total_cases_per_million)
+      ) +
+      geom_tile(color = "white", size = 0.03) +
+      scale_fill_viridis_c(
+          option = "B", begin = 0.2, end = 0.8,
+          name = "total cases per million",
+          guide = guide_colorbar(
+              barwidth = grid::unit(3.0, "in"),
+              barheight = grid::unit(0.2, "in")
+          )
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank()
+      ) +
+      theme(legend.position="bottom", legend.direction="horizontal")
+  ```
+
+```{r deaths heatmap, fig.height=6, fig.width=12}
+grid.arrange(
+     total.deaths.heatmap,
+     total.deaths.per.million.heatmap,
+     ncol=2, nrow=1,
+     top = "Relative and absolute total deaths of EU countries over time (January 2020 - July 2021)"
+)
+```
+
+Conclusions:
+Compared to the absolute death figures the relative figures show a different picture. The countries with the most total deaths are differently from each other when looked at the relative numbers:
+
+Whereas Germany is rather on the lower third regarding relative deaths, United Kingdom, Italy and Poland are on the topper third. Other countries as France and Spain are to be found in the midfield regarding the relative numbers.
+On the other hand side countries with lower absolute deaths have high relative numbers.
+
+Further in the heatmap for the absolute deaths there is also a cut to be seen after the top 6 countries: We would assume that that has to do with the population jump of the larger EU countries to the other countries.
+We can also denote that the distribution of the relative numbers over time are much more even than on the total numbers, which also affirms the assumption that absolute deaths numbers are tight to the population amount.
+
+<br>
+<br>
+
+```{r cases heatmap, fig.height=6  , fig.width=12}
+grid.arrange(
+     total.cases.heatmap,
+     total.cases.per.million.heatmap,
+     ncol=2, nrow=1,
+     top = "Relative and absolute total cases of EU countries over time (January 2020 - July 2021)"
+)
+```
+  
+Conclusions:
+Looking at the covid-19-cases shows an equally picture for the absolute figures as like deaths. But interestingly not only the relative numbers are different for a country compared to the absolute.
+
+There is also a difference between relative deaths and relative cases:
+
+Countries like Sweden, Lithuania, Netherlands and Luxembourg have a very high relative case number but low relative death number. In this countries the cases lead to much less deaths than in countries like Hungary, Czechia or Bulgary.
+
+<br>
+<br>
+
+## 3.1. Are covid deaths and cases figures different in the EU for countries with low and high GDPs in absolute and relative numbers?
+
+The heatmap overview gives indications about the "richness" of the EU countries being involved into covid cases and deaths numbers. So we looked at the *GDP per capita* values for each country in order to select countries with high and low GDPs and to look at the differences.
+
+```{r gdp of EU, fig.height=3, fig.width=8, fig.align='center'}
+## GDP OF EU COUNTRIES
+
+gdp.eu <- covid.data %>%
+    filter(location %in% all.eu.countries == TRUE) %>%
+    dplyr::select(location, gdp_per_capita) %>%
+    group_by(location) %>%
+    summarise(gdp_per_capita = max(gdp_per_capita)) %>%
+    arrange(gdp_per_capita)
+
+gdp.eu.plot <- gdp.eu %>%
+    ggplot(
+        aes(x=reorder(location, gdp_per_capita), y=gdp_per_capita)
+    ) +
+    geom_col(fill = "#56B4E9", alpha = 0.9)+
+    coord_flip(clip = "off")
+
+gdp.eu.plot +
+    labs(
+      title='GDP per Capita of EU countries',
+      # y=NULL,
+      # x=NULL,
+    ) +
+    theme_minimal()
+```
+
+```{r select eu countries with lowest and highest gdp}
+## SELECT COUNTRIES WITH HIGHEST AND LOWEST GDP
+
+eu.countries.by.gdp <- c(
+    "Luxembourg",
+    "Ireland",
+    "Netherlands",
+    "Sweden",
+    "Greece",
+    "Romania",
+    "Croatia",
+    "Bulgaria"
+)
+
+## TOTAL DEATHS AND CASES IN EU OVER TIME SELECTED BY GDP
+# select by GDP countries in Europe, richest 4 vs poorest 4
+
+total.deaths.and.cases.eu.gdp.selection <- covid.data %>%
+    filter(location %in% eu.countries.by.gdp == TRUE) %>%
+    dplyr::select(
+        date,
+        location,
+        total_deaths,
+        total_deaths_per_million,
+        total_cases,
+        total_cases_per_million,
+        new_deaths_smoothed_per_million,
+        new_cases_smoothed_per_million
+    )
+```
+
+<br>
+<br>
+
+\newpage
+### Absolute and relative total deaths of EU countries with low and high GDP over time
+
+With the line plots here we compared absolute and relative figures of _total deaths_ and *total cases*.
+
+The total numbers over time are technically a cdf of the deaths and cases. So with the line plot we can see for each country not only how high the values are compared to the absolute values but also the comparison to the other countries.
+The gradient of the curves shows how fast for each country at which time point the covid-19-cases and deaths develop. Basically steep parts of the curves show raising infections and deaths and plateaus stagnation of the numbers.
+
+```{r death and cases plot creation of selected eu countries}
+# deaths plots
+total.deaths.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=total_deaths, color = location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="total deaths",
+      x='') +
+    theme_minimal() +
+    theme(legend.position="none", legend.title=element_blank())
+
+total.deaths.per.million.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=total_deaths_per_million, color=location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="total deaths per million",
+      x='') +
+    theme_minimal() +
+    theme(legend.title = element_blank())
+
+# cases plots
+total.cases.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=total_cases, color = location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="total cases",
+      x='') +
+    theme_minimal() +
+    theme(legend.position="none", legend.title=element_blank())
+
+total.cases.per.million.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=total_cases_per_million, color = location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="total cases per million",
+      x='') +
+    theme_minimal() +
+    theme(legend.title = element_blank())
+```
+
+```{r, fig.height=6, fig.width=10}
+grid.arrange(
+    total.deaths.eu.selection.plot,
+    total.deaths.per.million.eu.selection.plot,
+    ncol=2, nrow=1
+)
+```
+
+Conclusions:
+As the heatmaps also showed here the picture is subtly differentiated: Luxembourg (also Ireland) and Romania (also Bulgaria) are the extremes: Luxembourg has both low death in absolute and relative figures. Whereas in Romania both are high. Sweden and Greece are both quite in the midfield, even they are opposite in their GDPs.
+
+In comparison to the heatmaps, we can see here that there were some time points where the figures raise very quickly: At the beginning of the pandemic and in November 2020. At the moment it seems we are getting again to a plateau, which might be related to vaccination.
+
+Romania however has a constant raise in deaths both in absolute and relative numbers, which implies that there is effectively no measures against covid-19-deaths.
+
+<br>
+<br>
+
+### Absolute and relative total cases of EU countries with low and high GDP over time
+
+```{r, fig.height=6, fig.width=10}
+grid.arrange(
+    total.cases.eu.selection.plot,
+    total.cases.per.million.eu.selection.plot,
+    ncol=2, nrow=1
+)
+```
+
+The cases plots look a little different. The absolute and the relative numbers seem to more correlate positively with each other. Like on the heatmaps we can see that Luxembourg is quite extreme: low overall cases but high relative numbers. But compared to the relative death figures: lowest mortality. Bulgaria for example show in that regards a much higher mortality by cases. 
+ Also again we can see very extreme raise of figures from November 2020. And a plateau currently.
+
+November might be related the beta variant of corona. And the current plateau to the effect of vaccination.
+
+For Romania compared to the death figures we can here see also the figures developing towards a plateau, which might also have an effect on the constant deaths in the close future.
+
+<br>
+<br>
+
+## 3.2 How are relative cases and death related to each other for EU countries with high and low GDP?
+
+We have seen so far relations between covid-19-cases and deaths but also that they are subtly differentiated from country to country.
+
+In order to get more insight about the relation of cases and deaths we looked at the relative *new cases* and *new deaths* compared between the countries.
+
+```{r fig.width=10, fig.height=8}
+# new deaths and new cases per million
+new.deaths.per.million.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="new deaths smoothed per million (7 days avg.)",
+      x=""
+    ) +
+    theme_minimal() +
+    theme(legend.title = element_blank())
+
+new.cases.per.million.eu.selection.plot <- total.deaths.and.cases.eu.gdp.selection %>%
+    ggplot(
+        aes(x=date, y=new_cases_smoothed_per_million, color = location)
+    ) +
+    geom_line(size=0.5) +
+    scale_x_date(
+        limits = covid.time.limits,
+        breaks = covid.time.breaks,
+        labels = covid.time.breaks.labels
+    ) +
+    labs(
+      y="new cases smoothed per million (7 days avg.)",
+      x=""
+    ) +
+    theme_minimal() +
+    theme(legend.title = element_blank())
+
+grid.arrange(
+    new.deaths.per.million.eu.selection.plot,
+    new.cases.per.million.eu.selection.plot,
+    ncol=1, nrow =2
+)
+```
+Conclusions:
+The picture is again different from country to country. There is definitely a correlation between cases and death to be seen. But it seems not be dependent on the GDP. 
+ 
+Compared to the heatmap we can see here on the time axis the corona waves. Each wave causes deaths. But a high GDP country like Sweden has quite a lot deaths for relatively low cases in the beginning of the pandemic but very few death for quite a lot infections in spring 2021, which might be related to different reactions, countermeasure or vaccination.
+
+But this picture is different for Bulgaria: Almost untouched from the pandemic in the beginning Bulgaria has very high relative deaths at the second and third wave similarly like Croatia, maybe due to a later availability of vaccination.
+
+The last wave is almost not existent for high GDP countries whereas for the low GDP countries it is quite visible. Except of Romania these countries however seems to managed the third corona wave and have currently similar new deaths figures as the high GDP countries. This might be related to later availibility of vaccination but of course also to other measures in the countries as contact and mask regulations.
+
+For the new cases rate we noticed also that Ireland had very low infections through out the third wave. Romania however with relatively low case rates has quite high new deaths numbers.
+
+<br>
+<br>
+
+\newpage
+### Correlation between relative deaths and relative cases per country
+
+In the following to examine the correlation between *new deaths* and *new cases* we used a scatter plot where the two variables are plotted against each other and the points are grouped by countries.
+
+```{r death vs cases eu gdp select, fig.height=8, fig.width=10}
+
+# DEATH VS. CASES
+deaths.and.cases.vs.tests.and.vaccinations.eu <- covid.data %>%
+    filter(location %in% eu.countries.by.gdp == TRUE) %>%
+    filter(new_cases_smoothed_per_million > 0) %>%
+    dplyr::select(
+        date,
+        location,
+        new_deaths_smoothed_per_million,
+        new_cases_smoothed_per_million,
+        new_tests_smoothed_per_thousand,
+        new_vaccinations_smoothed_per_million
+    )
+
+death.vs.cases.all.eu.by.gdp <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=1.5) +
+    labs(
+      y="new deaths smoothed per million (7 days avg.)",
+      x="new cases smoothed per million (7 days avg.)"
+    ) +
+    theme_minimal() +
+    theme(legend.title = element_blank())
+
+death.vs.cases.all.eu.by.gdp
+```
+
+Conclusion:
+The plot looks a bit wild, but it is visible that the different countries differ from each other: Some seems to have lower relative deaths on relative cases than others. So a linear relationship per country is indicated with different steepness of the directions of the point clouds per country.
+In order to understand the differences better between the countries we did split the plot by countries so we could analyse the shape of each countries point cloud in comparison.
+
+<br>
+<br>
+
+```{r death vs cases per eu country}
+
+death.vs.cases.bulgaria <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Bulgaria") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Bulgaria",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.croatia <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Croatia") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Croatia",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.greece <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Greece") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Greece",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.ireland <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Ireland") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Ireland",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+
+death.vs.cases.sweden <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Sweden") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Sweden",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.netherlands <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Netherlands") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Netherlands",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.romania <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Romania") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Romania",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+
+death.vs.cases.luxembourg <- deaths.and.cases.vs.tests.and.vaccinations.eu %>%
+    filter(location == "Luxembourg") %>%
+    ggplot(
+        aes(x=new_cases_smoothed_per_million, y=new_deaths_smoothed_per_million, color = location)
+    ) +
+    geom_point(size=0.4) +
+    labs(
+      title="Luxembourg",
+      y="new deaths s.p.m.",
+      x="new cases  s.p.m."
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+```
+
+```{r fig.width=10, fig.height=9}
+grid.arrange(
+    death.vs.cases.bulgaria,
+    death.vs.cases.croatia,
+    death.vs.cases.greece,
+    death.vs.cases.romania,
+    death.vs.cases.ireland,
+    death.vs.cases.sweden,
+    death.vs.cases.netherlands,
+    death.vs.cases.luxembourg,
+    ncol=2, nrow =4
+)
+```
+
+Conclusion:
+The point clouds are not easy to interpret, but still reveal some interesting patterns: 
+Netherlands, Luxembourg, Sweden, Ireland (high GDP) have quite flat curves - but all some big comparable spike, which low GDP countries seem not to have. Maybe the beginning of pandemic had more impact to high GDP countries. (Because of more transits?).
+For the low GDP countries there are 3 “different paths" recognizable in the plots. These might correspond to the 3 big waves that maybe had different intensity in new death figures.
+
+<br>
+<br>
+\newpage
+
+# 4. Is there a distribution in the variables to be found in the data set?
+
+In order to analyze whether there is a target distribution within the variables, the most common and best known variables - Total Cases, Total Deaths and Reproduction Rate - are selected to be investigated. 
+It should be mentioned that the data are time-based and that time series analyzes should normally be used. However, we have omitted this chapter for reasons of content.
+```{r}
+datf<-as_tibble(read.csv('owid-covid-data.csv'))
+
+datf<- datf %>% 
+  fill(total_cases)
+```
+
+In the course of the investigations the function descdist() from the package fitdistrplus serves mainly. This compares several Pearson distributions with the variables we know and additionally introduces bootstrapping. 
+<br>
+
+### Total Cases and Deaths 
+```{r, fig.width=5,fig.height=4}
+invisible(descdist(datf$total_cases,discrete=FALSE,boot=100))
+cleaned<-as_tibble(as.numeric(na.omit(datf$total_deaths)))
+
+```
+Conclusion: This plot shows only the disributions for total cases, as for total deaths it is almost the same. The variables total_cases (total corona cases) and total_deaths (total corona deaths) can be fitted to a lognormal distribution. It can also be fitted to a gamma function, but since it is known from observation that these variables are cumulative and increasing, only the lognormal distribution is examined. 
+
+```{r,fig.height=5,fig.width=6}
+a<-ggplot(datf)+
+  aes(sample=log(total_cases))+
+  geom_qq(col='blue') +
+  geom_qq_line() +
+  labs(
+    title='Q-Q-Plot for Total Cases',
+    subtitle='Log-Plot of Total Cases',
+    x='Normal theor. lognormal quantiles',
+    y='Observed lognormal values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+b<-ggplot(cleaned)+
+  aes(sample=log(value))+
+  geom_qq(col='blue') +
+  geom_qq_line() +
+  labs(
+    title='Q-Q-Plot for Total Deaths',
+    subtitle='Log-Plot of Total Deaths',
+    x='Normal theor. lognormal quantiles',
+    y='Observed lognormal values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+a+b
+```
+
+Conclusion: 
+
+* Total Cases: Except of the tails of the plot, the data looks very lognormal distributed. The tail at the bottom is understandable, because there are no negative cases. The little outbreak at the top of the graph indicates that the observations are increasing that much like a lognormal distribution would expect.
+
+* Total Deaths: The tails are also not lognormal like in the total cases analysis, but the general curve is closer to the theoretical distribution. All in all the distribution is heavy tailed and have the same characteristics as the total cases variable. 
+<br>
+<br>
+
+### Reproduction Rate
+As expected the total cases and deaths are lognormal distributed, which is understandable, because it is a value which is always increasing. Another more interesting variable is the reproduction rate. 
+```{r, fig.width=5,fig.height=4}
+cleaned<-as_tibble(as.numeric(na.omit(datf$reproduction_rate)))
+
+invisible(descdist(cleaned$value,discrete=FALSE,boot=100)) 
+
+```
+Conclusion: At first glance, it looks as if this variable does not match any of the distribution. On closer inspection, however, it becomes clear that the reproductive rate exhibits a logistic distribution approach.
+
+In order to analyze the distribution more precisely, the density is compared with the density of a theoretical logistic distribution and an empirical density distribution function. 
+```{r,fig.height=4}
+sample_x<-data.frame(value=rlogis(1000,mean(cleaned$value),scale=var(cleaned$value)))
+
+a<- ggplot(cleaned)+
+  aes(x = value, y = ..density..) +
+  geom_histogram(bins=50,alpha=.5,aes(col='grey')) +
+  geom_density(alpha=.2,fill='red',aes(col='red'))+
+  geom_density(data=sample_x,alpha=.2,fill='blue',aes(col='blue'))+
+  xlim(-0.5,3)+
+  labs(
+    title='Histogram and Density',
+    subtitle='Repr. Rate against theoretical Logsitic Distribution',
+    x='Reproduction Rate',
+    y='Density',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  scale_color_identity(name = "Models",
+                         breaks = c("grey", "red", "blue"),
+                         labels = c("Histogram", "Observed", "Theoretical"),
+                         guide = "legend")+
+  theme_minimal()
+
+datf_sample=data.frame(dat=c(cleaned$value,sample_x$value))
+datf_sample$group=c(rep('Observed',nrow(cleaned)),rep('Estimated',nrow(sample_x)))
+b<-ggplot(datf_sample)+
+  aes(x=dat,col=group) +
+  stat_ecdf()+
+  xlim(0,3.5)+
+  labs(
+    title='ECDF of Reproduction Rate',
+    subtitle='Against theoretical ECDF',
+    x='Reproduction Rate',
+    y='Percent',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+a+b
+```
+
+Conclusion: 
+
+* Density: The observed data of the reproduction rate is fairly logistical distributed. Some outliers, especially around zero, disturb the distribution. The observed data has wider tails and a lower tip than the theoretical one. 
+
+* ECDF: The observed data of the reproduction rate is also here nearly logistic distributed. The theoretical data is also steeper than the observed one. 
+
+
+<br>
+\newpage
+
+
+
+# 5 Can we detect regional differences between the continents with a PCA?
+
+## 5.1 Scree Plot of PCA's for different continents
+
+To detect regional differences between the continents, for the continents Africa, Asia, Europe and North America a PCA was made. The following Scree and Boxplot show the different amount of explained variance by the principal components.
+
+```{r, fig.width=10, fig.height=9}
+covid.data = as_tibble(read.csv(file='owid-covid-data.csv'))
+
+
+pca_data = covid.data %>% 
+  filter(location %in% c("Africa", "Europe", "EU",
+                         "Asia", "World", "North America", "South America", "European Union", "United States") == F) %>% 
+  replace_na(
+    list(
+      total_cases=0,
+      total_deaths=0,
+      total_vaccinations=0,
+      median_age=0,
+      population=0,
+      median_age=0,
+      handwashing_facilities=0,
+      life_expectancy=0,
+      hospital_beds_per_thousand=0,
+      extreme_poverty = 0,
+      human_development_index=0,
+      gdp_per_capita=0
+    )) %>% 
+  group_by(location, continent)%>% 
+  summarise(
+    total_cases = max(total_cases),
+    total_deaths = max(total_deaths),
+    total_vaccinations = max(total_vaccinations),
+    median_age = max(median_age),
+    population = max(population),
+    gdp_per_capita = max(gdp_per_capita),
+    handwashing_facilities = max(handwashing_facilities),
+    hospital_beds_per_thousand = max(hospital_beds_per_thousand),
+    life_expectancy = max(life_expectancy),
+    human_development_index = max(human_development_index)
+    ) %>% 
+  filter((continent=="")==F) %>% 
+  arrange(desc(total_cases)) %>%
+  dplyr::select(-location) %>% 
+  dplyr::select(-one_of(c("location")))
+
+
+
+pca_data_europe = pca_data %>% 
+  filter(continent=='Europe') %>% 
+  as_data_frame()
+
+pca_data_asia = pca_data %>% 
+  filter(continent=='Asia') %>% 
+  as_data_frame()
+
+pca_data_africa = pca_data %>% 
+  filter(continent=='Africa') %>% 
+  as_data_frame()
+
+pca_data_asia = pca_data %>% 
+  filter(continent=='Asia') %>% 
+  as_data_frame()
+
+pca_data_na = pca_data %>% 
+  filter(continent=='North America') %>% 
+  as_data_frame()
+
+pca_data_sa = pca_data %>% 
+  filter(continent=='South America') %>% 
+  as_data_frame()
+
+pca_data_oc = pca_data %>% 
+  filter(continent=='Oceania') %>% 
+  as_data_frame()
+
+
+
+pca_europe = prcomp(pca_data_europe[,3:11], scale = TRUE, center = TRUE)
+pca_africa = prcomp(pca_data_africa[,3:11], scale = TRUE, center = TRUE)
+pca_asia = prcomp(pca_data_asia[,3:11], scale = TRUE, center = TRUE)
+pca_global = prcomp(pca_data[,3:11], scale = TRUE, center = TRUE)
+pca_na = prcomp(pca_data_na[,3:11], scale = TRUE, center = TRUE)
+
+var_exp_eur = data.frame(pc=1:9, var_exp = pca_europe$sdev^2 / sum(pca_europe$sdev^2))
+var_exp_eur$var_exp_cumsum <- cumsum(var_exp_eur$var_exp)
+var_exp_eur$var_exp_cumsum_r = round(var_exp_eur$var_exp_cumsum,2)
+var_exp_eur$continent = "Europe"
+
+var_exp_afr = data.frame(pc=1:9, var_exp = pca_africa$sdev^2 / sum(pca_africa$sdev^2))
+var_exp_afr$var_exp_cumsum <- cumsum(var_exp_afr$var_exp)
+var_exp_afr$var_exp_cumsum_r = round(var_exp_afr$var_exp_cumsum,2)
+var_exp_afr$continent = "Africa"
+
+var_exp_asia = data.frame(pc=1:9, var_exp = pca_asia$sdev^2 / sum(pca_asia$sdev^2))
+var_exp_asia$var_exp_cumsum <- cumsum(var_exp_asia$var_exp)
+var_exp_asia$var_exp_cumsum_r = round(var_exp_asia$var_exp_cumsum,2)
+var_exp_asia$continent = "Asia"
+
+var_exp_na = data.frame(pc=1:9, var_exp = pca_na$sdev^2 / sum(pca_na$sdev^2))
+var_exp_na$var_exp_cumsum <- cumsum(var_exp_na$var_exp)
+var_exp_na$var_exp_cumsum_r = round(var_exp_na$var_exp_cumsum,2)
+var_exp_na$continent = "NorthA"
+
+var_exp = rbind(var_exp_eur, var_exp_afr, var_exp_asia, var_exp_na)
+
+
+colors_continent = c(Europe = "#52DC89", Asia = "#C9AF00", Africa ="#FF7574", NorthA = "#75B5FF")
+
+
+scree = ggplot(var_exp) + 
+  geom_line(aes(x = pc, y = var_exp_cumsum, color=continent)) + 
+  geom_point(aes(x = pc, y = var_exp_cumsum, colours='black')) + 
+  scale_x_continuous('PC', breaks = round(seq(1, 9, by = 1),1)) + 
+  ylab('explained variance')+ 
+  ggtitle('Scree plot for different continents') +
+  theme(plot.title = element_text(hjust=0.5)) +
+  scale_fill_manual(values=colors_continent) + 
+  scale_colour_manual(values=colors_continent)
+  
+
+
+bar_scree = ggplot(var_exp) +
+  geom_bar(position="dodge", stat="identity", aes(fill=continent, y=var_exp, x=pc), alpha=0.65) +
+  scale_x_continuous('PC', breaks = round(seq(1, 9, by = 1),1)) + 
+  scale_fill_manual(values=colors_continent) +
+  ggtitle('amount of explained variance by continent') + 
+  ylab('explained variance') +
+  theme(plot.title = element_text(hjust=0.5))
+
+# scree
+# bar_scree
+grid.arrange(scree, bar_scree, ncol=1, nrow =2)
+```
+Conclusion: The results of the different PCAs show differences between the continents. The curve of the the Scree Plot for the continents Africa and Asia run similar. The same effect can be seen for the continents Europe and North America. Beside the similar curve of the two continent-pairs, there are also differences between the amount of explained variance per principal component. While the first component for North America and Europe explains about 44% and 46% of the total data variance, the component for Africa and Asica explains only about 36% and 33%.
+<br>
+
+\newpage
+## 5.2 Correlation BiPlot for PCA of Europe
+
+To find out, how the different principal components of the PCA of Europe are build, we look at a correlation biplot. The plot shows the share of the variance of the different variables on the different principal components. 
+
+```{r fig.height = 10, fig.width = 10}
+library(corrplot)
+col3 = hcl.colors(10, "Purp", rev = TRUE)
+
+var_eur = get_pca_var(pca_europe)
+var_afr = get_pca_var(pca_africa)
+
+cor_plot_eur = corrplot(var_eur$cos2, is.corr=F, tl.col='black', col = col3, mar=c(0,0,1,0), title='Correlation BiPlot for PCA Europe')
+par(mfrow=c(1,1))
+
+```
+Conclusion: We can see, that the first dimension of the PCA contains nearly only covid data and the population. Development data plays no crucial rule here. The whole variance of the development data is mostly distributed on the principal component 2 to 5. With the first two principal components for the PCA in Europe, nearly 70% of the total variance can be explained. This shows, that the whole data variance can be approximated with covid and population data, because these explain the differences between countries in Europe the best.
+
+\newpage
+
+## 5.3 Correlation BiPlot for PCA of Europe
+
+To find out, how the different principal components of the PCA of Africa are build, we look at a correlation biplot. The plot shows the share of the variance of the different variables on the different principal components. 
+
+```{r fig.height = 10, fig.width = 10}
+library(corrplot)
+col3 = hcl.colors(10, "Purp", rev = TRUE)
+
+var_eur = get_pca_var(pca_europe)
+var_afr = get_pca_var(pca_africa)
+par(mfrow=c(1,1))
+
+cor_plot_afr = corrplot(var_afr$cos2, is.corr=F, tl.col='black', col = col3,mar=c(0,0,1,0), title='Correlation BiPlot for PCA Africa')
+
+```
+Conclusion: In contrast to Europe, the first dimensions of the PCA of Africa contain the great part of the total variance of the development data. The covid data plays , like in Europe, a crucial role. The differences between countries in Africa can be explained with covid data. Beside this data, also the development indicators explain a great part of the total variance, because of the disparities between the countries.
+
+\newpage
+
+
+# 6 Was the data collection and compilation made meaningful?
+
+<br>
+
+```{r}
+datf<-as_tibble(read.csv('owid-covid-data.csv'))
+```
+
+
+To examine the NA values in the data set, they are added together in rows. This puts the consideration on the observations and not on the missing values per column, since these are already to be found in the summary of the data set. Accordingly, another column is created in which the number of NA values per row are stored. 
+```{r}
+datf$NA_Count<-apply(datf,1,function(x){sum(is.na(x))})
+```
+
+### Grouping by Continent
+To get a first overview of the missing values, they are illustrated by a barplot, which is grouped by continents. 
+```{r,fig.height=4,fig.width=7}
+
+grouped_NA_per_continent <-datf %>% 
+  group_by(continent) %>% 
+  summarise(NAs=sum(NA_Count)) 
+
+p1<- ggplot(grouped_NA_per_continent)+
+  aes(x=continent,y=NAs,fill=continent)+
+  geom_bar(stat='identity') +
+  labs(
+    title='Missing-Values',
+    subtitle = 'Grouped by continent',
+    x='Continent',
+    y='Count of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+grouped_NA_per_continent_location <-datf %>% 
+  group_by(continent,location) %>% 
+  filter(location %in% c('Europe','Africa','Asia','North America','South America','Oceania','European Union')==F) %>% 
+  filter(continent %in% c('Europe','Africa','Asia','North America','South America','Oceania')==F) %>% 
+  summarise(NAs=sum(NA_Count))
+  
+
+p2<- ggplot(grouped_NA_per_continent_location)+
+  aes(x=location,y=NAs,fill=location)+
+  geom_bar(stat='identity') +
+  labs(
+    title='Missing-Values',
+    subtitle = 'Grouped by continent and location',
+    x='Location',
+    y='Count of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+p1+p2
+```
+
+Conclusion: In Africa, Asia and Europe the most NA values are to be found. There is one continent that has NA values but finds no affiliation. To get a deeper insight into the 'Non'-continent, the right figure shows the dataset which is additionally grouped by location and the other known continents removed. International and World are also present in the dataset and presumably show a general mapping in the dataset. In the next analyses, International and World will be separated out and not considered further. 
+<br>
+<br>
+
+### Compare Africa and Europe (ScatterPlot)
+Based on the results from the previous chapters, we will now look at the two continents of Africa and Europe. The individual locations in each country will be compared. 
+
+The first continent to be considered is Africa and its places. For this, a scatter plot is selected to see which country has the most of the missing values. 
+```{r,fig.height=4}
+grouped_NA_per_Africa_column <-datf %>% 
+  group_by(location) %>% 
+  filter(continent %in% c('Africa')) %>% 
+  summarise(NAs=sum(NA_Count))
+
+p3<- ggplot(grouped_NA_per_Africa_column)+
+  aes(x=1:nrow(grouped_NA_per_Africa_column),y=NAs,label=location)+
+  geom_point()+
+  geom_text(size=3)+
+  labs(
+    title='Missing-Values in Africa',
+    subtitle = 'Grouped by location',
+    x='Index',
+    y='Count of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+datf$NA_per_pop<-datf$NA_Count/datf$population
+
+grouped_NA_per_Africa_column <-datf %>% 
+  group_by(location) %>% 
+  filter(continent %in% c('Africa')) %>% 
+  summarise(NAs=sum(NA_per_pop))
+
+p4<- ggplot(grouped_NA_per_Africa_column)+
+  aes(x=1:nrow(grouped_NA_per_Africa_column),y=NAs,label=location)+
+  geom_point()+
+  geom_text(size=3)+
+  labs(
+    title='Rel. Miss.-Values in Africa',
+    subtitle = 'Grouped by location ',
+    x='Index',
+    y='Percentage of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+p3+p4
+```
+
+Conclusion: In the left view Saint Helena has the fewest missing values in the data, but it is also one of the smallest countries in Africa. The data needs to be scaled to see what country has the fewest or most missing values per population.  The right view shows the scaled data. Saint Helena is now the country with the most missing values. This indicates that although Saint Helena has less missing values the missing values are much more severe than in the other countries of Africa. 
+<br>
+
+The next continent to be analyzed is Europe. For this the same procedure is done.
+```{r,fig.height=4}
+grouped_NA_per_Europe_column <-datf %>% 
+  group_by(location) %>% 
+  filter(continent %in% c('Europe')) %>% 
+  summarise(NAs=sum(NA_Count))
+indexes<- c(1:nrow(grouped_NA_per_Europe_column))
+p5<- ggplot(grouped_NA_per_Europe_column)+
+  aes(x=indexes,y=NAs,label=location)+
+  geom_point()+
+  geom_text(size=3)+
+  labs(
+    title='Missing-Values in Europe',
+    subtitle = 'Grouped by location',
+    x='Index',
+    y='Count of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+grouped_NA_per_Europe_column_2 <-datf %>% 
+  group_by(location) %>% 
+  filter(continent %in% c('Europe')) %>% 
+  filter(location %in% c('Vatican')==F) %>% 
+  summarise(NAs=sum(NA_per_pop))
+
+indexes_2<- c(1:nrow(grouped_NA_per_Europe_column_2))
+
+p6<- ggplot(grouped_NA_per_Europe_column_2)+
+  aes(x=indexes_2,y=NAs,label=location)+
+  geom_point()+
+  geom_text(size=3)+
+  labs(
+    title='Relative Miss.-Values in Europe',
+    subtitle = 'Grouped by location',
+    x='Index',
+    y='Percentage of NA values',
+    caption = 'Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+p5+p6
+```
+
+Conclusion: Some countries do have a lot of missing data, but in contrast to the population it is quite small. It is noticeable that some of the countries are on the same level in terms of absolute and relative values, whereas others a slided to the bottom and some to the top of the relative view. 
+<br>
+<br>
+
+### Time-Lapse: NA-Values per continent
+
+The next step in the analysis is to visualize the missing data over time. Start is January 2020 and end is July 2021. For this a area plot is used to identify outliers and changes in the continent view.  
+```{r,fig.width=6,fig.height=4}
+NAs_per_date_grouped_continent = datf %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter((continent=="")==F) %>% 
+  group_by(continent,date) %>% 
+  summarise(NAs=sum(NA_Count))
+
+p7 <- ggplot(NAs_per_date_grouped_continent) +
+  aes(x=date,y=NAs,fill=continent)+
+  geom_area(alpha=0.6 , size=.5, colour="white") +
+  scale_x_date(date_breaks = "3 month", date_minor_breaks = "1 week",
+               date_labels = "%b-%y")+
+  labs(
+    title='Missing-Values: Time Lapse',
+    subtitle='Grouped by continent',
+    x='Date',
+    y='Count of NA values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+p7
+
+```
+
+
+Conclusion: There are some special outbreaks that are amplified per connected continent. In general the missing values remain constant in the data collecting process though the time. Oceania is a continent in which the missing values increase from December 2020 onwards.
+<br>
+
+The same process can also be done with the Ratio of NA_values per population, which was an introduced parameter from the previous chapter. 
+
+```{r,fig.height=5,fig.width=7}
+NAs_per_date_grouped_continent = datf %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter((continent=="")==F) %>% 
+  filter("2020-04-01" < date, date < "2021-07-01") %>% 
+  group_by(continent,date) %>% 
+  summarise(NAs=sum(NA_per_pop))
+
+p8 <- ggplot(NAs_per_date_grouped_continent) +
+  aes(x=date,y=NAs,fill=continent)+
+  geom_area(alpha=0.6 , size=.5, colour="white") +
+  scale_x_date(date_breaks = "1 month", date_minor_breaks = "1 week",
+               date_labels = "%b-%y")+
+  labs(
+    title='Relative Missing-Values: Time Lapse',
+    subtitle='Grouped by continent',
+    x='Date',
+    y='Percentage of NA values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+NAs_per_date_grouped_continent = datf %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter((continent=="")==F) %>% 
+  filter("2021-06-01" < date, date < "2021-07-01") %>% 
+  group_by(continent,date) %>% 
+  summarise(NAs=sum(NA_per_pop))
+
+p9 <- ggplot(NAs_per_date_grouped_continent) +
+  aes(x=date,y=NAs,fill=continent)+
+  geom_area(alpha=0.6 , size=.5, colour="white") +
+  scale_x_date(date_breaks = "1 month", date_minor_breaks = "1 week",
+               date_labels = "%b-%y")+
+  labs(
+    title='Relative Missing-Values: Time Lapse',
+    subtitle='Zoomed in June to July 2021',
+    x='Date',
+    y='Percentage of NA values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+p8 /p9
+```
+
+Conclusion: The outbreak from Oceania between June and July 2021 destroys the plot of the Time Lapse (there is something going wrong). 
+<br>
+
+To clean the data and the plot from the disturbing Oceania data, the continent will simply be filtered out of it. 
+
+```{r fig.width=6, fig.height=5} 
+NAs_per_date_grouped_continent = datf %>% 
+  mutate(date = as.Date(date)) %>% 
+  filter((continent %in% c("","Oceania"))==F) %>% 
+  group_by(continent,date) %>% 
+  summarise(NAs=sum(NA_per_pop))
+
+ggplot(NAs_per_date_grouped_continent) +
+  aes(x=date,y=NAs,fill=continent)+
+  geom_area(alpha=0.6 , size=.5, colour="white") +
+  scale_x_date(date_breaks = "2 month", date_minor_breaks = "1 week",
+               date_labels = "%b-%y")+
+  labs(
+    title='Relative Missing-Values: Time Lapse',
+    subtitle='Grouped by continent',
+    x='Date',
+    y='Percentage of NA values',
+    caption='Data used: owid-covid-data.csv'
+  )+
+  theme_minimal()
+
+```
+
+Conclusion: South America does have an interesting leak of data from February 2021 to April 2021, which can be investigated more. 
+<br>
+<br>
+
+\newpage
+# 7 Conclusion
+
+Overall the covid-19 data set is a very rich, but also challenging data set. Our data exploration gave us a lot of indications of how the covid-19-situation has a different impact on different continents and countries and how it leads to different figures regarding the mortality. 
+
+In 2., the global overview, and in 5., the PCA-analysis, we showed that different attributes seem to be differently relevant to different locations.
+
+Looking closer onto the relation of death and cases in 3., and 4. we could derive that economy seems partly related to the death and case rates, but could by far not explain everything. Over time the pandemic has a different impact on the countries and also seemed to change their reactions and strategies regarding new covid-19-cases. Our conclusion here is that every country is very special regarding its dealing with the pandemic and needs tailored solutions.
+
+We are also aware that the pandemic is a very dynamic situation where the regulations regarding contacts and hygiene measure were very different for different countries and even changed over time. Tests and vaccination where differently distributed and used in the countries which we did not take into account. Some aspects are simply also not existent in the data.
+
+Except that, the data collection process has also its own challenges which we showed in 6., when we looked how missing entries in the data are distributed between different continents and states.
+
+Finally we understand the outcome of our exploration as a chance for hints for further investigation and as an assistance in focusing on different aspects for different continents and countries when looking at the pandemic.
